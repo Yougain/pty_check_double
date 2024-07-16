@@ -1,0 +1,207 @@
+#!/bin/env ruby
+
+
+require 'pty'
+require 'shellwords'
+
+require "termios"
+require "io/console"
+
+STDIN.extend Termios
+term_preset = STDIN.tcgetattr
+winsz = STDIN.winsize
+
+system("stty raw -echo")
+
+TIOCSCTTY = 0x540E
+
+master, slave = PTY.open
+
+pid = fork do
+	Process.setsid
+	master.close
+	STDIN.reopen slave
+	STDIN.ioctl(TIOCSCTTY, 0)
+	STDOUT.reopen slave
+	STDERR.reopen slave
+	STDIN.winsize = winsz
+	STDIN.extend Termios
+	STDIN.tcsetattr(Termios::TCSANOW, term_preset)
+	system "reset"
+	exec Shellwords.join(ARGV)
+end
+
+
+slave.close
+
+
+buff = ("0" * 4096).force_encoding("ASCII")
+buff2 = ("0" * 4096).force_encoding("ASCII")
+prevBuff = ("0" * 4096).force_encoding("ASCII")
+
+out = File.open "/proc/self/fd/0", "w"
+
+← = "\x1b[1;5D"
+←← = "\x1b[1;5d"
+→ = "\x1b[1;5C"
+→→ = "\x1b[1;5c"
+hold = nil
+HTime = 0.18
+
+toDouble = { ← => ←←, → => →→ }
+
+
+Thread.new do
+	while true do
+		begin
+			master.readpartial(4096, buff2)
+		rescue EOFError, Errno::EIO
+			exit 0
+		end
+		out.write buff2
+		out.flush
+	end
+end
+require 'Yk/path_aux'
+require 'Yk/debug2'
+p > "/home/yougain/.tmp/log/zsh_dbv/zshrc.local.log"
+
+prevT = nil
+timeout = nil
+
+
+trap :INT do
+	Process.kill :INT, pid
+end
+
+trap :EXIT do
+	STDIN.tcsetattr(Termios::TCSANOW, term_preset)
+end
+
+trap :WINCH do
+	winsz = STDIN.winsize
+	master.winsize = winsz
+end
+
+while true do
+	p timeout
+	rs, = IO.select [STDIN], [], [], timeout
+	if !rs
+		case hold
+		when 2
+			p :hit
+			master.write toDouble[prevBuff]
+		when 1
+			p :release
+			master.write prevBuff
+		end
+		master.flush
+		hold = nil
+		diffT = nil
+		prevT = nil 
+		timeout = nil
+		prevBuff.replace ""
+		next
+	end
+	STDIN.readpartial(4096, buff)
+	now = Time.now.to_f
+	if prevBuff == buff && toDouble[buff]
+		if prevT
+			diffT = now - prevT
+		end
+		if diffT && diffT >= 1.0
+			prevDiffT = nil
+		end
+		p now
+		p diffT
+		p hold
+		p timeout
+		if diffT < 0.17 # (prevDiffT && diffT / prevDiffT <= 2.0) || (!prevDiffT && diffT < 0.17)
+			p
+			if hold == 2
+				p
+				master.write prevBuff
+				master.flush
+			else
+				p
+				hold = 2
+			end
+			p
+			timeout = 0.3 # prevDiffT || diffT * 2
+		else
+			case hold
+			when nil
+				p
+				hold = 1
+			when 1
+				p
+				master.write prevBuff
+				master.flush
+			when 2
+				p
+				master.write prevBuff
+				master.flush
+				master.write prevBuff
+				master.flush
+				hold = 1
+			end
+			timeout = 0.17
+		end
+		p
+		prevDiffT = diffT
+	else
+		if hold
+			hold.times do
+				master.write prevBuff
+				master.flush
+			end
+		end
+		hold = nil
+		master.write buff
+		master.flush
+		timeout = nil
+	end
+	prevBuff.replace buff
+	prevT = now
+end
+
+
+while true do
+	if hold
+		rs, = IO.select [STDIN], [], [], HTime
+		if !rs
+			master.write hold
+			master.flush
+			hold = nil
+		end
+	else
+		rs, = IO.select [STDIN]
+	end
+	STDIN.readpartial(4096, buff)
+	case buff
+	when ←, →
+		if hold == buff
+			hold = nil
+			buff.replace buff == ← ? ←← : →→
+		else
+			if hold
+				master.write hold
+				master.flush
+			end
+			hold = buff.clone
+			next
+		end
+	else
+		if hold
+			master.write hold
+			master.flush
+		end
+		hold = nil
+	end
+	master.write buff
+	master.flush
+end
+
+
+
+
